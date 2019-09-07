@@ -24,6 +24,7 @@ import Data.Text as T
 class (Ord (Hash f r), Show (Hash f r), Eq (Hash f r)) => Schema f r | f -> r where
   type Hash f r :: Type
   type Source f r :: Type
+  type Target f r :: Type
   hash :: r -> Hash f r
   hashFromSource :: Source f r -> Maybe (Hash f r)
   reprFromSource :: Hash f r -> Source f r -> Either Text r
@@ -42,7 +43,7 @@ instance Schema J R where
 data SchemaSet f r where
   SchemaSet
     :: Schema f r
-    => r        -- ^ current version
+    => r          -- ^ current version
     -> [Arr f r]  -- ^ arrows
     -> SchemaSet f r
 
@@ -55,14 +56,21 @@ verticesInfo
   -> VerticeInfo f r -- Map from schema to inputs and outputs, FIXME: don't care about inputs
 verticesInfo = F.foldl' go M.empty
   where
-    go m (Arr f t) =
+    go m (Arr f t _) =
       let
         fh = hash @f f
         th = hash @f t
         updateTh h Nothing  = Just (S.singleton h)
         updateTh h (Just o) = Just (S.insert h o)
-      in M.alter (updateTh fh) th m
+      in M.alter (updateTh th) fh m
 
+-- naively explores all outputs
+-- findPath :: forall f r. Schema f r => Hash f r -> VerticeInfo f r -> Maybe (Arr f r)
+-- findPath hr vi = do
+--   outs <- M.lookup hr vi
+--   traverse (flip findPath vi) outs
+
+-- FIXME: check reachability to current?
 mkSchemaSet
   :: forall f r
   . Schema f r
@@ -89,9 +97,30 @@ mkSchemaSet repr arrows =
   else Left $ fromJust mError
 
 data Arr f r where
-  Arr :: Schema f r => r -> r -> Arr f r
+  Arr :: Schema f r => r -> r -> (Target f r -> Target f r) -> Arr f r
 
+instance Semigroup (Arr f r) where
+  (Arr from _ f) <> (Arr _ to g) = Arr from to (f . g)
+
+(~>)
+  :: Schema f r
+  => r
+  -> r
+  -> (Target f r -> Target f r)
+  -> Arr f r
 (~>) = Arr
+
+(≔)
+  :: Schema f r
+  => ((Target f r -> Target f r) -> Arr f r)
+  -> (Target f r -> Target f r)
+  -> Arr f r
+(≔) = ($)
+
+infixl 7 ~>
+infixl 6 ≔
+
+-- pattern from :~> to :~~> f = Arr from to f
 
 ss =
   let
@@ -99,6 +128,4 @@ ss =
     r2 = R 2
     r3 = R 3
     r4 = R 4
-  in SchemaSet @J r4 [r1 ~> r2, r3 ~> r2, r2 ~> r4]
-
--- TODO: ensure reachability to SchemaSet "Current" element
+  in SchemaSet @J r4 [r1 ~> r2 ≔ id, r3 ~> r2 ≔ id, r2 ~> r4 ≔ id]
